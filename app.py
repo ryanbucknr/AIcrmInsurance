@@ -576,6 +576,24 @@ def admin_upload_investor_data():
 
                 try:
                     if data_type == 'leads':
+                        # Check for duplicate lead (same name, date, investor)
+                        existing_lead = None
+                        try:
+                            conn = sqlite3.connect(db_manager.db_path)
+                            cursor = conn.cursor()
+                            cursor.execute('''
+                                SELECT id FROM leads
+                                WHERE investor_id = ? AND insured_name = ? AND lead_date = ?
+                            ''', (investor['id'], insured_name, created_date))
+                            existing_lead = cursor.fetchone()
+                            conn.close()
+                        except:
+                            pass
+
+                        if existing_lead:
+                            # Skip duplicate
+                            continue
+
                         # Add lead
                         result = db_manager.add_lead(
                             investor_id=investor['id'],
@@ -597,6 +615,24 @@ def admin_upload_investor_data():
                                     conn.commit()
 
                     elif data_type == 'enrollments':
+                        # Check for duplicate enrollment (same name, date)
+                        existing_enrollment = None
+                        try:
+                            conn = sqlite3.connect(db_manager.db_path)
+                            cursor = conn.cursor()
+                            cursor.execute('''
+                                SELECT id FROM enrollments
+                                WHERE insured_name = ? AND enrollment_date = ?
+                            ''', (insured_name, created_date))
+                            existing_enrollment = cursor.fetchone()
+                            conn.close()
+                        except:
+                            pass
+
+                        if existing_enrollment:
+                            # Skip duplicate
+                            continue
+
                         # Add enrollment
                         result = db_manager.add_enrollment(
                             insured_name=insured_name,
@@ -616,9 +652,63 @@ def admin_upload_investor_data():
             logger.error(f"Error parsing CSV file: {e}")
             return jsonify({'success': False, 'error': f'Error reading CSV file: {str(e)}'}), 400
 
-        # DISABLED: Auto-linking causes data corruption
-        # TODO: Implement proper linking after data validation
-        # For now, just import without linking
+        # Auto-link leads to enrollments by name (safe version)
+        if data_type == 'enrollments' and records_imported > 0:
+            try:
+                import sqlite3
+                conn = sqlite3.connect(db_manager.db_path)
+                cursor = conn.cursor()
+
+                # Link enrollments to leads for this investor only
+                cursor.execute('''
+                    UPDATE enrollments
+                    SET lead_id = (
+                        SELECT l.id FROM leads l
+                        WHERE l.insured_name = enrollments.insured_name
+                        AND l.investor_id = ?
+                        AND l.enrollment_id IS NULL
+                        LIMIT 1
+                    )
+                    WHERE lead_id IS NULL
+                    AND EXISTS (
+                        SELECT 1 FROM leads l
+                        WHERE l.insured_name = enrollments.insured_name
+                        AND l.investor_id = ?
+                    )
+                ''', (investor['id'], investor['id']))
+
+                # Update lead status to converted
+                cursor.execute('''
+                    UPDATE leads
+                    SET status = 'converted', enrollment_id = (
+                        SELECT e.id FROM enrollments e
+                        WHERE e.insured_name = leads.insured_name
+                        AND e.lead_id = leads.id
+                        LIMIT 1
+                    )
+                    WHERE investor_id = ?
+                    AND EXISTS (
+                        SELECT 1 FROM enrollments e
+                        WHERE e.insured_name = leads.insured_name
+                        AND e.lead_id = leads.id
+                    )
+                ''', (investor['id'],))
+
+                linked_count = cursor.rowcount
+                conn.commit()
+                conn.close()
+
+                if linked_count > 0:
+                    return jsonify({
+                        'success': True,
+                        'message': f'Successfully imported {records_imported} {data_type} records for {investor_name}. Linked {linked_count} to existing leads.',
+                        'records_imported': records_imported,
+                        'records_linked': linked_count
+                    })
+
+            except Exception as e:
+                logger.error(f"Error auto-linking data: {e}")
+                # Continue without linking
 
         return jsonify({
             'success': True,

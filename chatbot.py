@@ -141,17 +141,18 @@ class ChatbotManager:
             print(f"DEBUG: Looking for CSV files in {uploads_dir}")
 
             if os.path.exists(uploads_dir):
-                print(f"DEBUG: Uploads directory exists, contents: {os.listdir(uploads_dir)}")
+                csv_files = [f for f in os.listdir(uploads_dir) if f.lower().endswith('.csv')]
+                print(f"DEBUG: Uploads directory exists, CSV files: {csv_files}")
 
-                for filename in os.listdir(uploads_dir):
-                    if not filename.lower().endswith('.csv'):
-                        continue
-
-                    print(f"DEBUG: Found CSV file: {filename}")
+                for filename in csv_files:
+                    print(f"DEBUG: Checking file: {filename}")
 
                     # Check if file belongs to this investor
-                    if investor_name in filename.lower():
-                        print(f"DEBUG: File {filename} belongs to investor {investor_name}")
+                    investor_match = investor_name in filename.lower()
+                    print(f"DEBUG: Investor '{investor_name}' in filename '{filename}': {investor_match}")
+
+                    if investor_match:
+                        print(f"DEBUG: Processing file {filename} for investor {investor_name}")
                         file_path = os.path.join(uploads_dir, filename)
 
                         try:
@@ -159,7 +160,8 @@ class ChatbotManager:
                             with open(file_path, 'r', encoding='utf-8') as f:
                                 reader = csv.DictReader(f)
                                 rows = list(reader)
-                                print(f"DEBUG: Read {len(rows)} rows from {filename}")
+                                print(f"DEBUG: Successfully read {len(rows)} rows from {filename}")
+                                print(f"DEBUG: Sample row: {rows[0] if rows else 'No rows'}")
 
                             # Determine data type from filename
                             file_data_type = None
@@ -170,19 +172,23 @@ class ChatbotManager:
 
                             print(f"DEBUG: Determined data type: {file_data_type}")
 
-                            if file_data_type in data_types:
-                                all_data.extend([{
+                            if file_data_type and file_data_type in data_types:
+                                all_data.append({
                                     'type': file_data_type,
                                     'filename': filename,
                                     'data': rows
-                                }])
-                                print(f"DEBUG: Added {filename} to data sources")
+                                })
+                                print(f"DEBUG: Successfully added {filename} to data sources")
+                            else:
+                                print(f"DEBUG: Skipping {filename} - data type '{file_data_type}' not requested")
 
                         except Exception as e:
-                            print(f"Error reading {filename}: {e}")
+                            print(f"DEBUG: Error reading {filename}: {e}")
                             continue
             else:
                 print(f"DEBUG: Uploads directory does not exist: {uploads_dir}")
+
+            print(f"DEBUG: Total data sources found: {len(all_data)}")
 
             if not all_data:
                 return [{
