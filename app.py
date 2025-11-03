@@ -681,7 +681,7 @@ def admin_upload_investor_data():
                             import sqlite3
                             with sqlite3.connect(db_manager.db_path) as conn:
                                 cursor = conn.cursor()
-                                cursor.execute('UPDATE leads SET status = ? WHERE id = ?', 
+                                cursor.execute('UPDATE leads SET status = ? WHERE id = ?',
                                              (status, result['lead_id']))
                                 conn.commit()
                 
@@ -742,14 +742,13 @@ def admin_upload_investor_data():
                     SET enrollment_id = (
                         SELECT e.id FROM enrollments e
                         WHERE e.insured_name = leads.insured_name
-                        AND e.lead_id = leads.id
+                        LIMIT 1
                     ),
                     status = 'converted'
                     WHERE enrollment_id IS NULL
                     AND EXISTS (
                         SELECT 1 FROM enrollments e
                         WHERE e.insured_name = leads.insured_name
-                        AND e.lead_id = leads.id
                     )
                 ''')
                 conn.commit()
