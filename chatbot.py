@@ -138,14 +138,20 @@ class ChatbotManager:
 
             # Check for CSV files in uploads directory
             uploads_dir = '/data/uploads' if os.path.exists('/data') else 'uploads'
+            print(f"DEBUG: Looking for CSV files in {uploads_dir}")
 
             if os.path.exists(uploads_dir):
+                print(f"DEBUG: Uploads directory exists, contents: {os.listdir(uploads_dir)}")
+
                 for filename in os.listdir(uploads_dir):
                     if not filename.lower().endswith('.csv'):
                         continue
 
+                    print(f"DEBUG: Found CSV file: {filename}")
+
                     # Check if file belongs to this investor
                     if investor_name in filename.lower():
+                        print(f"DEBUG: File {filename} belongs to investor {investor_name}")
                         file_path = os.path.join(uploads_dir, filename)
 
                         try:
@@ -153,6 +159,7 @@ class ChatbotManager:
                             with open(file_path, 'r', encoding='utf-8') as f:
                                 reader = csv.DictReader(f)
                                 rows = list(reader)
+                                print(f"DEBUG: Read {len(rows)} rows from {filename}")
 
                             # Determine data type from filename
                             file_data_type = None
@@ -161,16 +168,21 @@ class ChatbotManager:
                             elif 'enrollment' in filename.lower():
                                 file_data_type = 'enrollments'
 
+                            print(f"DEBUG: Determined data type: {file_data_type}")
+
                             if file_data_type in data_types:
                                 all_data.extend([{
                                     'type': file_data_type,
                                     'filename': filename,
                                     'data': rows
                                 }])
+                                print(f"DEBUG: Added {filename} to data sources")
 
                         except Exception as e:
                             print(f"Error reading {filename}: {e}")
                             continue
+            else:
+                print(f"DEBUG: Uploads directory does not exist: {uploads_dir}")
 
             if not all_data:
                 return [{

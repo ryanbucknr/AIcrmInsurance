@@ -616,48 +616,9 @@ def admin_upload_investor_data():
             logger.error(f"Error parsing CSV file: {e}")
             return jsonify({'success': False, 'error': f'Error reading CSV file: {str(e)}'}), 400
 
-        # Simple auto-linking: match leads to enrollments by name
-        if data_type == 'enrollments' and records_imported > 0:
-            try:
-                conn = sqlite3.connect(db_manager.db_path)
-                cursor = conn.cursor()
-
-                # Simple linking: match by insured_name
-                cursor.execute('''
-                    UPDATE enrollments
-                    SET lead_id = (
-                        SELECT l.id FROM leads l
-                        WHERE l.insured_name = enrollments.insured_name
-                        AND l.investor_id = ?
-                        LIMIT 1
-                    )
-                    WHERE lead_id IS NULL AND insured_name IS NOT NULL
-                ''', (investor['id'],))
-
-                # Mark matching leads as converted
-                cursor.execute('''
-                    UPDATE leads
-                    SET status = 'converted'
-                    WHERE investor_id = ? AND insured_name IN (
-                        SELECT e.insured_name FROM enrollments e WHERE e.lead_id = leads.id
-                    )
-                ''', (investor['id'],))
-
-                conn.commit()
-                conn.close()
-
-                # Count how many were linked
-                linked_count = records_imported  # Approximate - most should link
-                if linked_count > 0:
-                    return jsonify({
-                        'success': True,
-                        'message': f'Successfully imported {records_imported} {data_type} records for {investor_name}. Auto-linked {linked_count} to existing leads.',
-                        'records_imported': records_imported,
-                        'records_linked': linked_count
-                    })
-            except Exception as e:
-                logger.error(f"Error auto-linking data: {e}")
-                # Continue anyway - linking is optional
+        # DISABLED: Auto-linking causes data corruption
+        # TODO: Implement proper linking after data validation
+        # For now, just import without linking
 
         return jsonify({
             'success': True,
