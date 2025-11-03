@@ -116,157 +116,74 @@ class ChatbotManager:
             return False
     
     def search_data(self, investor_id: int, query: str, data_types: List[str] = None) -> List[Dict[str, Any]]:
-        """Search through investor's CSV files using OpenAI."""
+        """Simple chatbot that reads from database, not CSV files"""
         try:
             if data_types is None:
                 data_types = ['leads', 'enrollments']
 
-            # Get investor name for file matching
+            # Get data from database (simpler and more reliable)
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            cursor.execute('SELECT name FROM investors WHERE id = ?', (investor_id,))
-            investor_result = cursor.fetchone()
+
+            # Get basic stats
+            if 'leads' in data_types:
+                cursor.execute('SELECT COUNT(*) as count FROM leads WHERE investor_id = ?', (investor_id,))
+                leads_count = cursor.fetchone()[0]
+            else:
+                leads_count = 0
+
+            if 'enrollments' in data_types:
+                cursor.execute('''
+                    SELECT COUNT(*) as count FROM enrollments e
+                    JOIN leads l ON e.lead_id = l.id
+                    WHERE l.investor_id = ?
+                ''', (investor_id,))
+                enrollments_count = cursor.fetchone()[0]
+            else:
+                enrollments_count = 0
+
             conn.close()
 
-            if not investor_result:
-                return []
+            # Calculate conversion rate
+            conversion_rate = (enrollments_count / leads_count * 100) if leads_count > 0 else 0
 
-            investor_name = investor_result[0].lower()
+            # Create simple response based on query
+            query_lower = query.lower()
 
-            # Read data directly from CSV files
-            all_data = []
-
-            # Check for CSV files in uploads directory
-            uploads_dir = '/data/uploads' if os.path.exists('/data') else 'uploads'
-            print(f"DEBUG: Looking for CSV files in {uploads_dir}")
-
-            if os.path.exists(uploads_dir):
-                csv_files = [f for f in os.listdir(uploads_dir) if f.lower().endswith('.csv')]
-                print(f"DEBUG: Uploads directory exists, CSV files: {csv_files}")
-
-                for filename in csv_files:
-                    print(f"DEBUG: Checking file: {filename}")
-
-                    # Check if file belongs to this investor
-                    investor_match = investor_name in filename.lower()
-                    print(f"DEBUG: Investor '{investor_name}' in filename '{filename}': {investor_match}")
-
-                    if investor_match:
-                        print(f"DEBUG: Processing file {filename} for investor {investor_name}")
-                        file_path = os.path.join(uploads_dir, filename)
-
-                        try:
-                            import csv
-                            with open(file_path, 'r', encoding='utf-8') as f:
-                                reader = csv.DictReader(f)
-                                rows = list(reader)
-                                print(f"DEBUG: Successfully read {len(rows)} rows from {filename}")
-                                print(f"DEBUG: Sample row: {rows[0] if rows else 'No rows'}")
-
-                            # Determine data type from filename
-                            file_data_type = None
-                            if 'lead' in filename.lower():
-                                file_data_type = 'leads'
-                            elif 'enrollment' in filename.lower():
-                                file_data_type = 'enrollments'
-
-                            print(f"DEBUG: Determined data type: {file_data_type}")
-
-                            if file_data_type and file_data_type in data_types:
-                                all_data.append({
-                                    'type': file_data_type,
-                                    'filename': filename,
-                                    'data': rows
-                                })
-                                print(f"DEBUG: Successfully added {filename} to data sources")
-                            else:
-                                print(f"DEBUG: Skipping {filename} - data type '{file_data_type}' not requested")
-
-                        except Exception as e:
-                            print(f"DEBUG: Error reading {filename}: {e}")
-                            continue
+            if 'how many leads' in query_lower or 'lead count' in query_lower:
+                response = f"You have {leads_count} leads in your portfolio."
+            elif 'how many enrollment' in query_lower or 'enrollment count' in query_lower:
+                response = f"You have {enrollments_count} enrollments."
+            elif 'conversion rate' in query_lower or 'conversion' in query_lower:
+                response = f"Your conversion rate is {conversion_rate:.1f}% ({enrollments_count} enrollments out of {leads_count} leads)."
+            elif 'total' in query_lower or 'summary' in query_lower:
+                response = f"Portfolio summary: {leads_count} leads, {enrollments_count} enrollments, {conversion_rate:.1f}% conversion rate."
             else:
-                print(f"DEBUG: Uploads directory does not exist: {uploads_dir}")
-
-            print(f"DEBUG: Total data sources found: {len(all_data)}")
-
-            if not all_data:
-                return [{
-                    'query': query,
-                    'response': "I don't have any data files to search through yet. Please upload some CSV files first.",
-                    'timestamp': datetime.now().isoformat()
-                }]
-
-            # Create a comprehensive data summary for the AI
-            data_summary = []
-            for data_item in all_data:
-                data_type = data_item['type']
-                filename = data_item['filename']
-                rows = data_item['data']
-
-                summary = f"\n{data_type.upper()} from {filename} ({len(rows)} records):\n"
-
-                # Show sample records (first 10)
-                for i, row in enumerate(rows[:10]):
-                    first_name = row.get('First Name', '')
-                    last_name = row.get('Last Name', '')
-                    name = f"{first_name} {last_name}".strip()
-                    created = row.get('Created', '')
-                    tags = row.get('Tags', '')
-
-                    summary += f"  {i+1}. {name} - {created}"
-                    if tags:
-                        summary += f" ({tags})"
-                    summary += "\n"
-
-                if len(rows) > 10:
-                    summary += f"  ... and {len(rows) - 10} more records\n"
-
-                data_summary.append(summary)
-
-            # Create search prompt
-            search_prompt = f"""
-Based on the user query: "{query}"
-
-Analyze the following CSV data and provide a helpful answer. The data includes leads and enrollments for {investor_name.title()}.
-
-Data Summary:
-{''.join(data_summary)}
-
-Please provide a clear, accurate answer based on the data above. Include specific numbers and details when relevant.
-"""
-
-            response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that analyzes CSV data to answer questions about leads and enrollments. Be specific and include numbers when possible."},
-                    {"role": "user", "content": search_prompt}
-                ],
-                max_tokens=1000,
-                temperature=0.3
-            )
+                response = f"I can help you with information about your leads and enrollments. You currently have {leads_count} leads and {enrollments_count} enrollments, with a {conversion_rate:.1f}% conversion rate."
 
             # Store chat history
-            bot_response = response.choices[0].message.content
-
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO chat_history (investor_id, user_message, bot_response)
                 VALUES (?, ?, ?)
-            ''', (investor_id, query, bot_response))
+            ''', (investor_id, query, response))
             conn.commit()
             conn.close()
 
             return [{
                 'query': query,
-                'response': bot_response,
+                'response': response,
                 'timestamp': datetime.now().isoformat()
             }]
 
         except Exception as e:
-            print(f"❌ Error searching CSV data: {e}")
-            return []
+            print(f"❌ Chatbot error: {e}")
+            return [{
+                'query': query,
+                'response': "I'm having trouble accessing your data right now. Please try again later.",
+                'timestamp': datetime.now().isoformat()
+            }]
     
     def get_chat_history(self, investor_id: int, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent chat history for an investor."""

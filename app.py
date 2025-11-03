@@ -497,7 +497,7 @@ def get_investor_roi():
 @app.route('/api/admin/upload-investor-data', methods=['POST'])
 @login_required
 def admin_upload_investor_data():
-    """Upload multiple CSV files and auto-detect data types"""
+    """Simple, reliable CSV upload"""
     try:
         # Verify admin access
         user = auth_manager.get_user_by_id(session['user_id'])
@@ -516,9 +516,9 @@ def admin_upload_investor_data():
         if file.filename == '':
             return jsonify({'success': False, 'error': 'No file selected'}), 400
 
-        # Only accept CSV files for simplicity
+        # Only accept CSV files
         if not file.filename.lower().endswith('.csv'):
-            return jsonify({'success': False, 'error': 'Only CSV files are supported. Please convert Excel files to CSV first.'}), 400
+            return jsonify({'success': False, 'error': 'Only CSV files are supported'}), 400
 
         # Get investor
         investors = db_manager.get_investors()
@@ -536,188 +536,69 @@ def admin_upload_investor_data():
             data_type = 'enrollments'
 
         if not data_type:
-            return jsonify({'success': False, 'error': f'Cannot determine data type from filename "{file.filename}". Please include "lead" or "enrollment" in the filename.'}), 400
+            return jsonify({'success': False, 'error': 'Filename must contain "lead" or "enrollment"'}), 400
 
-        # Read CSV file directly
+        # Read and import CSV
         import csv
         from datetime import datetime
 
         try:
-            # Read CSV content directly from uploaded file
             content = file.stream.read().decode('utf-8')
             reader = csv.DictReader(content.splitlines())
 
             records_imported = 0
 
             for row in reader:
-                # Extract and clean basic data
                 first_name = str(row.get('First Name', '')).strip()
                 last_name = str(row.get('Last Name', '')).strip()
                 insured_name = f"{first_name} {last_name}".strip()
 
-                # Skip empty names
                 if not insured_name or insured_name in ['', ' ', 'nan', 'NaN']:
                     continue
 
-                # Clean the name
                 insured_name = clean_sql_data(insured_name)
                 if not insured_name:
                     continue
 
-                # Parse date
                 try:
                     created_date = datetime.fromisoformat(str(row.get('Created', '')).replace('Z', '+00:00')).strftime('%Y-%m-%d')
                 except:
                     created_date = datetime.now().strftime('%Y-%m-%d')
 
-                # Get tags/notes
                 tags = str(row.get('Tags', '')).strip()
                 notes = clean_sql_data(tags) if tags else "Imported from CSV"
 
-                try:
-                    if data_type == 'leads':
-                        # Check for duplicate lead (same name, date, investor)
-                        existing_lead = None
-                        try:
-                            conn = sqlite3.connect(db_manager.db_path)
-                            cursor = conn.cursor()
-                            cursor.execute('''
-                                SELECT id FROM leads
-                                WHERE investor_id = ? AND insured_name = ? AND lead_date = ?
-                            ''', (investor['id'], insured_name, created_date))
-                            existing_lead = cursor.fetchone()
-                            conn.close()
-                        except:
-                            pass
+                if data_type == 'leads':
+                    result = db_manager.add_lead(
+                        investor_id=investor['id'],
+                        insured_name=insured_name,
+                        lead_date=created_date,
+                        notes=notes
+                    )
+                    if result['success']:
+                        records_imported += 1
 
-                        if existing_lead:
-                            # Skip duplicate
-                            continue
-
-                        # Add lead
-                        result = db_manager.add_lead(
-                            investor_id=investor['id'],
-                            insured_name=insured_name,
-                            lead_date=created_date,
-                            notes=notes
-                        )
-
-                        if result['success']:
-                            records_imported += 1
-
-                            # Mark as converted if tags indicate enrollment
-                            if 'enrollment' in tags.lower():
-                                import sqlite3
-                                with sqlite3.connect(db_manager.db_path) as conn:
-                                    cursor = conn.cursor()
-                                    cursor.execute('UPDATE leads SET status = ? WHERE id = ?',
-                                                 ('converted', result['lead_id']))
-                                    conn.commit()
-
-                    elif data_type == 'enrollments':
-                        # Check for duplicate enrollment (same name, date)
-                        existing_enrollment = None
-                        try:
-                            conn = sqlite3.connect(db_manager.db_path)
-                            cursor = conn.cursor()
-                            cursor.execute('''
-                                SELECT id FROM enrollments
-                                WHERE insured_name = ? AND enrollment_date = ?
-                            ''', (insured_name, created_date))
-                            existing_enrollment = cursor.fetchone()
-                            conn.close()
-                        except:
-                            pass
-
-                        if existing_enrollment:
-                            # Skip duplicate
-                            continue
-
-                        # Add enrollment
-                        result = db_manager.add_enrollment(
-                            insured_name=insured_name,
-                            enrollment_date=created_date,
-                            labor_cost=15.00,
-                            notes=notes
-                        )
-
-                        if result['success']:
-                            records_imported += 1
-
-                except Exception as e:
-                    logger.error(f"Error processing row for {insured_name}: {e}")
-                    continue
+                elif data_type == 'enrollments':
+                    result = db_manager.add_enrollment(
+                        insured_name=insured_name,
+                        enrollment_date=created_date,
+                        labor_cost=15.00,
+                        notes=notes
+                    )
+                    if result['success']:
+                        records_imported += 1
 
         except Exception as e:
-            logger.error(f"Error parsing CSV file: {e}")
-            return jsonify({'success': False, 'error': f'Error reading CSV file: {str(e)}'}), 400
-
-        # Auto-link leads to enrollments by name (safe version)
-        if data_type == 'enrollments' and records_imported > 0:
-            try:
-                import sqlite3
-                conn = sqlite3.connect(db_manager.db_path)
-                cursor = conn.cursor()
-
-                # Link enrollments to leads for this investor only
-                cursor.execute('''
-                    UPDATE enrollments
-                    SET lead_id = (
-                        SELECT l.id FROM leads l
-                        WHERE l.insured_name = enrollments.insured_name
-                        AND l.investor_id = ?
-                        AND l.enrollment_id IS NULL
-                        LIMIT 1
-                    )
-                    WHERE lead_id IS NULL
-                    AND EXISTS (
-                        SELECT 1 FROM leads l
-                        WHERE l.insured_name = enrollments.insured_name
-                        AND l.investor_id = ?
-                    )
-                ''', (investor['id'], investor['id']))
-
-                # Update lead status to converted
-                cursor.execute('''
-                    UPDATE leads
-                    SET status = 'converted', enrollment_id = (
-                        SELECT e.id FROM enrollments e
-                        WHERE e.insured_name = leads.insured_name
-                        AND e.lead_id = leads.id
-                        LIMIT 1
-                    )
-                    WHERE investor_id = ?
-                    AND EXISTS (
-                        SELECT 1 FROM enrollments e
-                        WHERE e.insured_name = leads.insured_name
-                        AND e.lead_id = leads.id
-                    )
-                ''', (investor['id'],))
-
-                linked_count = cursor.rowcount
-                conn.commit()
-                conn.close()
-
-                if linked_count > 0:
-                    return jsonify({
-                        'success': True,
-                        'message': f'Successfully imported {records_imported} {data_type} records for {investor_name}. Linked {linked_count} to existing leads.',
-                        'records_imported': records_imported,
-                        'records_linked': linked_count
-                    })
-
-            except Exception as e:
-                logger.error(f"Error auto-linking data: {e}")
-                # Continue without linking
+            return jsonify({'success': False, 'error': f'CSV parsing error: {str(e)}'}), 400
 
         return jsonify({
             'success': True,
-            'message': f'Successfully imported {records_imported} {data_type} records for {investor_name}',
+            'message': f'Imported {records_imported} {data_type} records for {investor_name}',
             'records_imported': records_imported
         })
 
     except Exception as e:
-        logger.error(f"Error uploading investor data: {str(e)}")
+        logger.error(f"Upload error: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/admin/delete-investor-data', methods=['POST'])
