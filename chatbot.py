@@ -58,158 +58,196 @@ class ChatbotManager:
         conn.close()
     
     def process_csv_data(self, investor_id: int, data_type: str) -> bool:
-        """Process CSV data for a specific investor and create searchable chunks."""
+        """Process CSV files for chatbot - now just verifies files exist and are readable."""
         try:
+            # Get investor name
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
-            # Clear existing chunks for this investor and data type
-            cursor.execute('''
-                DELETE FROM data_chunks 
-                WHERE investor_id = ? AND data_type = ?
-            ''', (investor_id, data_type))
-            
-            # Get data based on type
-            if data_type == 'leads':
-                query = '''
-                    SELECT l.id, l.insured_name, l.lead_date, l.status, l.cost, l.notes,
-                           i.name as investor_name, i.lead_cost as cost_per_lead
-                    FROM leads l
-                    JOIN investors i ON l.investor_id = i.id
-                    WHERE l.investor_id = ?
-                '''
-            elif data_type == 'enrollments':
-                query = '''
-                    SELECT e.id, e.insured_name, e.enrollment_date, e.labor_cost, e.notes,
-                           i.name as investor_name, i.lead_cost as cost_per_lead
-                    FROM enrollments e
-                    JOIN leads l ON e.lead_id = l.id
-                    JOIN investors i ON l.investor_id = i.id
-                    WHERE l.investor_id = ?
-                '''
-            else:
-                return False
-            
-            cursor.execute(query, (investor_id,))
-            rows = cursor.fetchall()
-            
-            if not rows:
-                conn.close()
-                return False
-            
-            # Get column names
-            if data_type == 'leads':
-                columns = ['id', 'insured_name', 'lead_date', 'status', 'cost', 'notes',
-                          'investor_name', 'cost_per_lead']
-            else:
-                columns = ['id', 'insured_name', 'enrollment_date', 'labor_cost', 'notes',
-                          'investor_name', 'cost_per_lead']
-            
-            # Create chunks of data (process in batches of 10 records)
-            chunk_size = 10
-            chunks = []
-            
-            for i in range(0, len(rows), chunk_size):
-                chunk_rows = rows[i:i + chunk_size]
-                chunk_text = f"Data for {data_type} (records {i+1}-{min(i+chunk_size, len(rows))}):\n\n"
-                
-                for row in chunk_rows:
-                    record_text = ""
-                    for j, value in enumerate(row):
-                        if value is not None:
-                            record_text += f"{columns[j]}: {value}\n"
-                    chunk_text += record_text + "\n"
-                
-                # Create hash for uniqueness
-                chunk_hash = hashlib.md5(chunk_text.encode()).hexdigest()
-                
-                # Store chunk
-                cursor.execute('''
-                    INSERT INTO data_chunks (investor_id, data_type, chunk_text, chunk_hash, metadata)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (investor_id, data_type, chunk_text, chunk_hash, 
-                      json.dumps({'chunk_size': len(chunk_rows), 'start_index': i+1})))
-                
-                chunks.append(chunk_text)
-            
-            conn.commit()
+            cursor.execute('SELECT name FROM investors WHERE id = ?', (investor_id,))
+            investor_result = cursor.fetchone()
             conn.close()
-            
-            print(f"✅ Processed {len(rows)} {data_type} records into {len(chunks)} chunks for investor {investor_id}")
-            return True
-            
+
+            if not investor_result:
+                return False
+
+            investor_name = investor_result[0].lower()
+
+            # Check for CSV files in uploads directory
+            uploads_dir = '/data/uploads' if os.path.exists('/data') else 'uploads'
+
+            if not os.path.exists(uploads_dir):
+                print(f"❌ Uploads directory not found: {uploads_dir}")
+                return False
+
+            csv_files_found = 0
+            for filename in os.listdir(uploads_dir):
+                if not filename.lower().endswith('.csv'):
+                    continue
+
+                # Check if file belongs to this investor and data type
+                if (investor_name in filename.lower() and
+                    ((data_type == 'leads' and 'lead' in filename.lower()) or
+                     (data_type == 'enrollments' and 'enrollment' in filename.lower()))):
+
+                    file_path = os.path.join(uploads_dir, filename)
+
+                    try:
+                        import csv
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            reader = csv.DictReader(f)
+                            rows = list(reader)
+
+                        print(f"✅ Found {len(rows)} records in {filename}")
+                        csv_files_found += 1
+
+                    except Exception as e:
+                        print(f"❌ Error reading {filename}: {e}")
+                        continue
+
+            if csv_files_found > 0:
+                print(f"✅ Verified {csv_files_found} {data_type} CSV files for investor {investor_name}")
+                return True
+            else:
+                print(f"❌ No {data_type} CSV files found for investor {investor_name}")
+                return False
+
         except Exception as e:
             print(f"❌ Error processing CSV data: {e}")
             return False
     
     def search_data(self, investor_id: int, query: str, data_types: List[str] = None) -> List[Dict[str, Any]]:
-        """Search through investor's data using OpenAI embeddings."""
+        """Search through investor's CSV files using OpenAI."""
         try:
             if data_types is None:
                 data_types = ['leads', 'enrollments']
-            
+
+            # Get investor name for file matching
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
-            # Get relevant chunks
-            chunks = []
-            for data_type in data_types:
-                cursor.execute('''
-                    SELECT chunk_text, metadata FROM data_chunks
-                    WHERE investor_id = ? AND data_type = ?
-                ''', (investor_id, data_type))
-                
-                type_chunks = cursor.fetchall()
-                chunks.extend([(chunk[0], chunk[1], data_type) for chunk in type_chunks])
-            
-            if not chunks:
-                conn.close()
+            cursor.execute('SELECT name FROM investors WHERE id = ?', (investor_id,))
+            investor_result = cursor.fetchone()
+            conn.close()
+
+            if not investor_result:
                 return []
-            
-            # Use OpenAI to find most relevant chunks
-            chunk_texts = [chunk[0] for chunk in chunks]
-            
-            # Create a prompt to find relevant data
+
+            investor_name = investor_result[0].lower()
+
+            # Read data directly from CSV files
+            all_data = []
+
+            # Check for CSV files in uploads directory
+            uploads_dir = '/data/uploads' if os.path.exists('/data') else 'uploads'
+
+            if os.path.exists(uploads_dir):
+                for filename in os.listdir(uploads_dir):
+                    if not filename.lower().endswith('.csv'):
+                        continue
+
+                    # Check if file belongs to this investor
+                    if investor_name in filename.lower():
+                        file_path = os.path.join(uploads_dir, filename)
+
+                        try:
+                            import csv
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                reader = csv.DictReader(f)
+                                rows = list(reader)
+
+                            # Determine data type from filename
+                            file_data_type = None
+                            if 'lead' in filename.lower():
+                                file_data_type = 'leads'
+                            elif 'enrollment' in filename.lower():
+                                file_data_type = 'enrollments'
+
+                            if file_data_type in data_types:
+                                all_data.extend([{
+                                    'type': file_data_type,
+                                    'filename': filename,
+                                    'data': rows
+                                }])
+
+                        except Exception as e:
+                            print(f"Error reading {filename}: {e}")
+                            continue
+
+            if not all_data:
+                return [{
+                    'query': query,
+                    'response': "I don't have any data files to search through yet. Please upload some CSV files first.",
+                    'timestamp': datetime.now().isoformat()
+                }]
+
+            # Create a comprehensive data summary for the AI
+            data_summary = []
+            for data_item in all_data:
+                data_type = data_item['type']
+                filename = data_item['filename']
+                rows = data_item['data']
+
+                summary = f"\n{data_type.upper()} from {filename} ({len(rows)} records):\n"
+
+                # Show sample records (first 10)
+                for i, row in enumerate(rows[:10]):
+                    first_name = row.get('First Name', '')
+                    last_name = row.get('Last Name', '')
+                    name = f"{first_name} {last_name}".strip()
+                    created = row.get('Created', '')
+                    tags = row.get('Tags', '')
+
+                    summary += f"  {i+1}. {name} - {created}"
+                    if tags:
+                        summary += f" ({tags})"
+                    summary += "\n"
+
+                if len(rows) > 10:
+                    summary += f"  ... and {len(rows) - 10} more records\n"
+
+                data_summary.append(summary)
+
+            # Create search prompt
             search_prompt = f"""
-            Based on the user query: "{query}"
-            
-            Analyze the following data chunks and return the most relevant information.
-            Focus on data that directly answers the user's question.
-            
-            Data chunks:
-            {chr(10).join([f"Chunk {i+1}: {chunk[:500]}..." for i, chunk in enumerate(chunk_texts[:5])])}
-            
-            Return a JSON response with relevant data points that answer the query.
-            """
-            
+Based on the user query: "{query}"
+
+Analyze the following CSV data and provide a helpful answer. The data includes leads and enrollments for {investor_name.title()}.
+
+Data Summary:
+{''.join(data_summary)}
+
+Please provide a clear, accurate answer based on the data above. Include specific numbers and details when relevant.
+"""
+
             response = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that analyzes data to answer user questions. Return relevant information in a clear, structured way."},
+                    {"role": "system", "content": "You are a helpful assistant that analyzes CSV data to answer questions about leads and enrollments. Be specific and include numbers when possible."},
                     {"role": "user", "content": search_prompt}
                 ],
                 max_tokens=1000,
                 temperature=0.3
             )
-            
+
             # Store chat history
             bot_response = response.choices[0].message.content
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO chat_history (investor_id, user_message, bot_response)
                 VALUES (?, ?, ?)
             ''', (investor_id, query, bot_response))
-            
             conn.commit()
             conn.close()
-            
+
             return [{
                 'query': query,
                 'response': bot_response,
                 'timestamp': datetime.now().isoformat()
             }]
-            
+
         except Exception as e:
-            print(f"❌ Error searching data: {e}")
+            print(f"❌ Error searching CSV data: {e}")
             return []
     
     def get_chat_history(self, investor_id: int, limit: int = 10) -> List[Dict[str, Any]]:
