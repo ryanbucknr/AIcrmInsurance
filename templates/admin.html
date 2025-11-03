@@ -279,6 +279,54 @@
                 statusDiv.innerHTML = `<div style="padding: 15px; background: #fee; color: #c00; border-radius: 8px;">❌ Upload failed: ${error.message}</div>`;
             }
         });
+
+        // Delete data functionality
+        document.getElementById('deleteForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const investor = document.getElementById('deleteInvestorSelect').value;
+            const dataType = document.getElementById('deleteDataType').value;
+            const confirmText = document.getElementById('deleteConfirm').value;
+            const statusDiv = document.getElementById('deleteStatus');
+
+            if (!investor || !dataType) {
+                statusDiv.innerHTML = '<div style="padding: 15px; background: #fee; color: #c00; border-radius: 8px;">Please select an investor and data type</div>';
+                return;
+            }
+
+            if (confirmText !== 'DELETE') {
+                statusDiv.innerHTML = '<div style="padding: 15px; background: #fee; color: #c00; border-radius: 8px;">Please type "DELETE" to confirm</div>';
+                return;
+            }
+
+            statusDiv.innerHTML = '<div style="padding: 15px; background: #fff3cd; color: #856404; border-radius: 8px;">⏳ Deleting data...</div>';
+
+            try {
+                const response = await fetch('/api/admin/delete-investor-data', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        investor: investor,
+                        data_type: dataType
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    statusDiv.innerHTML = '<div style="padding: 15px; background: #d4edda; color: #155724; border-radius: 8px;">✅ ' + result.message + '</div>';
+                    // Refresh page after 3 seconds
+                    setTimeout(() => location.reload(), 3000);
+                } else {
+                    statusDiv.innerHTML = '<div style="padding: 15px; background: #f8d7da; color: #721c24; border-radius: 8px;">❌ ' + result.error + '</div>';
+                }
+
+            } catch (error) {
+                statusDiv.innerHTML = '<div style="padding: 15px; background: #f8d7da; color: #721c24; border-radius: 8px;">❌ Delete failed: ' + error.message + '</div>';
+            }
+        });
         
         // Chatbot data processing
         document.getElementById('processChatbotDataBtn').addEventListener('click', async function() {

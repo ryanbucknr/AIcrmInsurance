@@ -497,7 +497,7 @@ def get_investor_roi():
 @app.route('/api/admin/upload-investor-data', methods=['POST'])
 @login_required
 def admin_upload_investor_data():
-    """Simple, reliable admin endpoint to upload and import investor CSV data"""
+    """Upload multiple CSV files and auto-detect data types"""
     try:
         # Verify admin access
         user = auth_manager.get_user_by_id(session['user_id'])
@@ -509,10 +509,9 @@ def admin_upload_investor_data():
 
         file = request.files['file']
         investor_name = request.form.get('investor')
-        data_type = request.form.get('data_type')
 
-        if not investor_name or not data_type:
-            return jsonify({'success': False, 'error': 'Investor and data type required'}), 400
+        if not investor_name:
+            return jsonify({'success': False, 'error': 'Investor required'}), 400
 
         if file.filename == '':
             return jsonify({'success': False, 'error': 'No file selected'}), 400
@@ -527,6 +526,17 @@ def admin_upload_investor_data():
 
         if not investor:
             return jsonify({'success': False, 'error': f'Investor {investor_name} not found'}), 404
+
+        # Auto-detect data type from filename
+        filename = file.filename.lower()
+        data_type = None
+        if 'lead' in filename:
+            data_type = 'leads'
+        elif 'enrollment' in filename:
+            data_type = 'enrollments'
+
+        if not data_type:
+            return jsonify({'success': False, 'error': f'Cannot determine data type from filename "{file.filename}". Please include "lead" or "enrollment" in the filename.'}), 400
 
         # Read CSV file directly
         import csv
@@ -657,6 +667,65 @@ def admin_upload_investor_data():
 
     except Exception as e:
         logger.error(f"Error uploading investor data: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/admin/delete-investor-data', methods=['POST'])
+@login_required
+@admin_only
+def admin_delete_investor_data():
+    """Delete investor data by type"""
+    try:
+        data = request.get_json()
+        investor_name = data.get('investor')
+        data_type = data.get('data_type')
+
+        if not investor_name or not data_type:
+            return jsonify({'success': False, 'error': 'Investor and data type required'}), 400
+
+        # Get investor
+        investors = db_manager.get_investors()
+        investor = next((i for i in investors if i['name'].lower() == investor_name.lower()), None)
+
+        if not investor:
+            return jsonify({'success': False, 'error': f'Investor {investor_name} not found'}), 404
+
+        import sqlite3
+        conn = sqlite3.connect(db_manager.db_path)
+        cursor = conn.cursor()
+
+        deleted_count = 0
+
+        if data_type == 'leads':
+            # Delete leads for this investor
+            cursor.execute('DELETE FROM leads WHERE investor_id = ?', (investor['id'],))
+            deleted_count = cursor.rowcount
+
+        elif data_type == 'enrollments':
+            # Delete enrollments for this investor (matched by name)
+            cursor.execute('DELETE FROM enrollments WHERE insured_name IN (SELECT insured_name FROM leads WHERE investor_id = ?)', (investor['id'],))
+            deleted_count = cursor.rowcount
+
+        elif data_type == 'all':
+            # Delete both leads and enrollments
+            cursor.execute('DELETE FROM enrollments WHERE insured_name IN (SELECT insured_name FROM leads WHERE investor_id = ?)', (investor['id'],))
+            enrollments_deleted = cursor.rowcount
+
+            cursor.execute('DELETE FROM leads WHERE investor_id = ?', (investor['id'],))
+            leads_deleted = cursor.rowcount
+
+            deleted_count = leads_deleted + enrollments_deleted
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Successfully deleted {deleted_count} {data_type} records for {investor_name}',
+            'records_deleted': deleted_count
+        })
+
+    except Exception as e:
+        logger.error(f"Error deleting investor data: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # ============== CHATBOT API ENDPOINTS ==============
