@@ -1,0 +1,19 @@
+# Core Flask (required for investor portal)
+flask==3.0.0
+flask-cors==4.0.0
+werkzeug==3.0.0
+python-dotenv==1.0.0
+gunicorn==21.2.0
+
+# File parsing for admin uploads (CSV, Excel, PDF support)
+pandas>=2.1.0
+openpyxl==3.1.2
+PyPDF2==3.0.1
+
+# OpenAI API for chatbot functionality
+openai>=1.55.3
+numpy>=1.26.0
+
+# Build tools for compatibility
+setuptools>=68.0.0
+wheel>=0.40.0
