@@ -497,268 +497,121 @@ def get_investor_roi():
 @app.route('/api/admin/upload-investor-data', methods=['POST'])
 @login_required
 def admin_upload_investor_data():
-    """Admin endpoint to upload and import investor CSV data"""
+    """Simple, reliable admin endpoint to upload and import investor CSV data"""
     try:
         # Verify admin access
         user = auth_manager.get_user_by_id(session['user_id'])
         if not user or not user.get('is_admin'):
             return jsonify({'success': False, 'error': 'Admin access required'}), 403
-        
+
         if 'file' not in request.files:
             return jsonify({'success': False, 'error': 'No file provided'}), 400
-        
+
         file = request.files['file']
         investor_name = request.form.get('investor')
         data_type = request.form.get('data_type')
-        
+
         if not investor_name or not data_type:
             return jsonify({'success': False, 'error': 'Investor and data type required'}), 400
-        
+
         if file.filename == '':
             return jsonify({'success': False, 'error': 'No file selected'}), 400
-        
-        # Accept multiple file types
-        allowed_extensions = ['.csv', '.xlsx', '.xls', '.pdf', '.txt']
-        file_ext = os.path.splitext(file.filename)[1].lower()
-        
-        if file_ext not in allowed_extensions:
-            return jsonify({'success': False, 'error': 'Unsupported file type. Please upload CSV, Excel, PDF, or Text files'}), 400
-        
-        # Save file to persistent uploads directory
-        # Use /data/uploads on Render (persistent disk), or local uploads for dev
-        if os.path.exists('/data'):
-            # Production: Use persistent disk
-            uploads_dir = os.environ.get('UPLOADS_PATH', '/data/uploads')
-        else:
-            # Development: Use local uploads directory
-            uploads_dir = os.environ.get('UPLOADS_PATH', 'uploads')
-        
-        os.makedirs(uploads_dir, exist_ok=True)
-        file_path = os.path.join(uploads_dir, file.filename)
-        
-        print(f"DEBUG: Saving file to: {file_path}")  # Debug log
-        file.save(file_path)
-        
+
+        # Only accept CSV files for simplicity
+        if not file.filename.lower().endswith('.csv'):
+            return jsonify({'success': False, 'error': 'Only CSV files are supported. Please convert Excel files to CSV first.'}), 400
+
         # Get investor
         investors = db_manager.get_investors()
         investor = next((i for i in investors if i['name'].lower() == investor_name.lower()), None)
-        
+
         if not investor:
-            os.remove(file_path)
             return jsonify({'success': False, 'error': f'Investor {investor_name} not found'}), 404
-        
-        # Import data based on file type
+
+        # Read CSV file directly
         import csv
         from datetime import datetime
-        
-        records_imported = 0
-        rows_data = []
-        
-        # Parse file based on type
-        if file_ext == '.csv':
-            # Parse CSV
-            with open(file_path, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                rows_data = list(reader)
-        
-        elif file_ext in ['.xlsx', '.xls']:
-            # Parse Excel
-            try:
-                import pandas as pd
-                df = pd.read_excel(file_path)
-                rows_data = df.to_dict('records')
-            except ImportError:
-                # Fallback: try openpyxl directly
-                try:
-                    from openpyxl import load_workbook
-                    wb = load_workbook(file_path)
-                    ws = wb.active
-                    headers = [cell.value for cell in ws[1]]
-                    rows_data = []
-                    for row in ws.iter_rows(min_row=2, values_only=True):
-                        rows_data.append(dict(zip(headers, row)))
-                except:
-                    os.remove(file_path)
-                    return jsonify({'success': False, 'error': 'Excel parsing failed. Please install openpyxl or pandas'}), 500
-        
-        elif file_ext == '.pdf':
-            # For PDF, we'll extract text and try to parse structured data
-            os.remove(file_path)
-            return jsonify({'success': False, 'error': 'PDF parsing not yet implemented. Please use CSV or Excel for now.'}), 400
-        
-        elif file_ext == '.txt':
-            # Parse tab or comma-delimited text file
-            with open(file_path, 'r', encoding='utf-8') as f:
-                # Try to detect delimiter
-                first_line = f.readline()
-                delimiter = '\t' if '\t' in first_line else ','
-                f.seek(0)
-                reader = csv.DictReader(f, delimiter=delimiter)
-                rows_data = list(reader)
-        
-        # Process the parsed data
-        if rows_data:
-            # Import pandas if available (for NaN checking)
-            try:
-                import pandas as pd
-                has_pandas = True
-            except ImportError:
-                has_pandas = False
-            
-            reader = rows_data  # Use the parsed data as if it were from CSV reader
-            
+
+        try:
+            # Read CSV content directly from uploaded file
+            content = file.stream.read().decode('utf-8')
+            reader = csv.DictReader(content.splitlines())
+
+            records_imported = 0
+
             for row in reader:
-                # Extract and clean data - handle NaN values from pandas
-                if has_pandas:
-                    first_name = str(row.get('First Name', '')).strip() if pd.notna(row.get('First Name', '')) else ''
-                    last_name = str(row.get('Last Name', '')).strip() if pd.notna(row.get('Last Name', '')) else ''
-                else:
-                    # Fallback when pandas not available
-                    first_name_val = row.get('First Name', '')
-                    last_name_val = row.get('Last Name', '')
-                    first_name = str(first_name_val).strip() if first_name_val and str(first_name_val).lower() != 'nan' else ''
-                    last_name = str(last_name_val).strip() if last_name_val and str(last_name_val).lower() != 'nan' else ''
+                # Extract and clean basic data
+                first_name = str(row.get('First Name', '')).strip()
+                last_name = str(row.get('Last Name', '')).strip()
                 insured_name = f"{first_name} {last_name}".strip()
-                
-                # Clean and validate the insured_name to prevent SQL errors
-                if not insured_name or insured_name.strip() == "" or insured_name == " ":
+
+                # Skip empty names
+                if not insured_name or insured_name in ['', ' ', 'nan', 'NaN']:
                     continue
-                
-                # Remove any problematic characters that could cause SQL syntax errors
-                import re
-                # More aggressive cleaning - remove all special characters except basic ones
-                insured_name = re.sub(r'[^\w\s\-\.]', '', insured_name)  # Keep only alphanumeric, spaces, hyphens, dots
-                insured_name = insured_name.strip()  # Remove leading/trailing spaces
-                
-                # Use our comprehensive cleaning function
+
+                # Clean the name
                 insured_name = clean_sql_data(insured_name)
-                
-                if not insured_name or insured_name.strip() == "":
-                    print(f"DEBUG: Skipping empty name after cleaning")
+                if not insured_name:
                     continue
-                
-                print(f"DEBUG: Cleaned name: '{insured_name}'")  # Debug log
-                
+
+                # Parse date
                 try:
-                    created_date = datetime.fromisoformat(row.get('Created', '').replace('Z', '+00:00')).strftime('%Y-%m-%d')
+                    created_date = datetime.fromisoformat(str(row.get('Created', '')).replace('Z', '+00:00')).strftime('%Y-%m-%d')
                 except:
                     created_date = datetime.now().strftime('%Y-%m-%d')
-                
-                # Handle tags field
-                if has_pandas:
-                    tags = str(row.get('Tags', '')).lower() if pd.notna(row.get('Tags', '')) else ''
-                else:
-                    tags_val = row.get('Tags', '')
-                    tags = str(tags_val).lower() if tags_val and str(tags_val).lower() != 'nan' else ''
-                
-                if data_type == 'leads':
-                    # Import as lead
-                    status = 'converted' if 'enrollment' in tags else 'active'
-                    
-                    # Clean the notes field to prevent SQL syntax errors
-                    if has_pandas:
-                        tags_value = str(row.get('Tags', '')) if pd.notna(row.get('Tags', '')) else ''
-                    else:
-                        tags_val = row.get('Tags', '')
-                        tags_value = str(tags_val) if tags_val and str(tags_val).lower() != 'nan' else ''
-                    notes = clean_sql_data(tags_value)
-                    if notes:
-                        notes = f"Tags: {notes}"
-                    else:
-                        notes = "Imported from CSV"
-                    
-                    result = db_manager.add_lead(
-                        investor_id=investor['id'],
-                        insured_name=insured_name,
-                        lead_date=created_date,
-                        notes=notes
-                    )
-                    
-                    if result['success']:
-                        records_imported += 1
-                        # Update status if converted
-                        if status == 'converted':
-                            import sqlite3
-                            with sqlite3.connect(db_manager.db_path) as conn:
-                                cursor = conn.cursor()
-                                cursor.execute('UPDATE leads SET status = ? WHERE id = ?',
-                                             (status, result['lead_id']))
-                                conn.commit()
-                
-                elif data_type == 'enrollments':
-                    # Import as enrollment - process all records since this is an enrollment file for this investor
-                    # For enrollment files, process all records as they belong to the selected investor
-                    print(f"DEBUG: Processing enrollment for {insured_name}")  # Debug log
-                    
-                    # Clean the notes field to prevent SQL syntax errors
-                    if has_pandas:
-                        tags_value = str(row.get('Tags', '')) if pd.notna(row.get('Tags', '')) else ''
-                    else:
-                        tags_val = row.get('Tags', '')
-                        tags_value = str(tags_val) if tags_val and str(tags_val).lower() != 'nan' else ''
-                    notes = clean_sql_data(tags_value)
-                    if notes:
-                        notes = f"Tags: {notes}"
-                    else:
-                        notes = "Imported from CSV"
-                    
-                    try:
+
+                # Get tags/notes
+                tags = str(row.get('Tags', '')).strip()
+                notes = clean_sql_data(tags) if tags else "Imported from CSV"
+
+                try:
+                    if data_type == 'leads':
+                        # Add lead
+                        result = db_manager.add_lead(
+                            investor_id=investor['id'],
+                            insured_name=insured_name,
+                            lead_date=created_date,
+                            notes=notes
+                        )
+
+                        if result['success']:
+                            records_imported += 1
+
+                            # Mark as converted if tags indicate enrollment
+                            if 'enrollment' in tags.lower():
+                                import sqlite3
+                                with sqlite3.connect(db_manager.db_path) as conn:
+                                    cursor = conn.cursor()
+                                    cursor.execute('UPDATE leads SET status = ? WHERE id = ?',
+                                                 ('converted', result['lead_id']))
+                                    conn.commit()
+
+                    elif data_type == 'enrollments':
+                        # Add enrollment
                         result = db_manager.add_enrollment(
                             insured_name=insured_name,
                             enrollment_date=created_date,
                             labor_cost=15.00,
                             notes=notes
                         )
-                        print(f"DEBUG: Enrollment result: {result}")  # Debug log
-                    except Exception as e:
-                        print(f"DEBUG: Enrollment error: {e}")  # Debug log
-                        logger.error(f"Error adding enrollment for {insured_name}: {e}")
-                        continue
-                    
-                    if result['success']:
-                        records_imported += 1
-                        print(f"DEBUG: Successfully imported enrollment {records_imported}")  # Debug log
-        
-        # Clean up file
-        os.remove(file_path)
-        
-        # Link leads to enrollments if both exist
-        if data_type == 'enrollments':
-            import sqlite3
-            with sqlite3.connect(db_manager.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    UPDATE enrollments e
-                    SET lead_id = (
-                        SELECT l.id FROM leads l 
-                        WHERE l.insured_name = e.insured_name 
-                        AND l.enrollment_id IS NULL
-                        LIMIT 1
-                    )
-                    WHERE e.lead_id IS NULL
-                ''')
-                cursor.execute('''
-                    UPDATE leads
-                    SET enrollment_id = (
-                        SELECT e.id FROM enrollments e
-                        WHERE e.insured_name = leads.insured_name
-                        LIMIT 1
-                    ),
-                    status = 'converted'
-                    WHERE enrollment_id IS NULL
-                    AND EXISTS (
-                        SELECT 1 FROM enrollments e
-                        WHERE e.insured_name = leads.insured_name
-                    )
-                ''')
-                conn.commit()
-        
+
+                        if result['success']:
+                            records_imported += 1
+
+                except Exception as e:
+                    logger.error(f"Error processing row for {insured_name}: {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error parsing CSV file: {e}")
+            return jsonify({'success': False, 'error': f'Error reading CSV file: {str(e)}'}), 400
+
         return jsonify({
             'success': True,
-            'message': f'Successfully imported {data_type} for {investor_name}',
+            'message': f'Successfully imported {records_imported} {data_type} records for {investor_name}',
             'records_imported': records_imported
         })
-        
+
     except Exception as e:
         logger.error(f"Error uploading investor data: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
